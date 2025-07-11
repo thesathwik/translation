@@ -49,6 +49,13 @@ class TextFileTranslator:
             'F': 'F'
         }
 
+        # Manual translations for phrases that are sometimes left untranslated
+        self.manual_translations = {
+            'TELEPHONE': 'TELÉFONO',
+            'WHERE YOU MAY BE REACHED': 'DÓNDE SE LE PUEDE LOCALIZAR',
+            'AMERICAN INDIAN': 'INDÍGENA AMERICANO'
+        }
+
     def is_form_header_or_code(self, text: str) -> bool:
         """Check if text is a form header or code that should be preserved"""
         text_upper = text.upper().strip()
@@ -93,8 +100,8 @@ class TextFileTranslator:
         if len(text_stripped) <= 2:
             return False
 
-        # Check if it's part of a structured data field (like phone numbers)
-        if re.search(r'\(\s*\)', context_line):  # Phone number format
+        # Skip segments that are simply phone numbers or parentheses
+        if re.match(r'^[\d\-\(\)\s]+$', text_stripped):
             return False
 
         return True
@@ -148,6 +155,12 @@ class TextFileTranslator:
             # Handle Y/N replacements first
             if clean_text.upper() in self.yn_replacements:
                 return self.yn_replacements[clean_text.upper()]
+
+            # Manual translation overrides
+            manual_key = clean_text.upper()
+            if manual_key in self.manual_translations:
+                manual = self.manual_translations[manual_key]
+                return self._preserve_capitalization(clean_text, manual)
 
             # Build context-aware prompt
             context_info = ""
