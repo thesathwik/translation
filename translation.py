@@ -140,10 +140,8 @@ class TextFileTranslator:
             result = re.sub(r'\b' + eng + r'\b', esp, result)
         return result
 
-    def translate_text_with_context(self, text: str, context: str = "") -> str:
-        """
-        Translate text with context awareness for better accuracy
-        """
+    def translate_text_with_context(self, text: str, context: str = "", retries: int = 1) -> str:
+        """Translate text with context awareness and retry if the text is not translated"""
         try:
             clean_text = text.strip()
 
@@ -156,7 +154,7 @@ class TextFileTranslator:
             if context:
                 context_info = f"\n\nContext (the line this text appears in): {context}"
 
-            system_prompt = f"""You are an expert translator specializing in translating official government and medical forms from English to Spanish.
+            base_prompt = f"""You are an expert translator specializing in translating official government and medical forms from English to Spanish.
 
 CRITICAL TRANSLATION RULES:
 1. Translate the given English text to formal, official Spanish
@@ -177,6 +175,8 @@ FORMATTING RULES:
 
 Return ONLY the Spanish translation with no explanations or additional text.{context_info}"""
 
+            system_prompt = base_prompt
+
             response = self.client.chat.completions.create(
                 model=self.deployment_name,
                 messages=[
@@ -191,6 +191,21 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
 
             # Clean up translation
             translation = self._clean_translation_output(translation)
+
+            # If translation looks unchanged, retry with stronger instruction
+            if translation.strip().upper() == clean_text.upper() and retries > 0:
+                retry_prompt = base_prompt + "\n\nIf any part of the text is in English, ensure it is translated to Spanish." + context_info
+                response = self.client.chat.completions.create(
+                    model=self.deployment_name,
+                    messages=[
+                        {"role": "system", "content": retry_prompt},
+                        {"role": "user", "content": f"Translate completely to Spanish: {clean_text}"}
+                    ],
+                    temperature=0.1,
+                    max_tokens=200
+                )
+                translation = response.choices[0].message.content.strip()
+                translation = self._clean_translation_output(translation)
 
             # Ensure capitalization is preserved
             translation = self._preserve_capitalization(clean_text, translation)
@@ -227,6 +242,34 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
             return translation.title()
         else:
             return translation
+
+    def _detect_yn_positions(self, line: str) -> List[int]:
+        """Return index positions of standalone Y/N indicators"""
+        return [m.start() for m in re.finditer(r'(?<!\w)[YN](?!\w)', line)]
+
+    def _align_yes_no_spacing(self, original_line: str, translated_line: str, positions: List[int]) -> str:
+        """Align S/N indicators to the same positions as the original Y/N"""
+        if not positions:
+            return translated_line
+
+        translated_positions = [m.start() for m in re.finditer(r'(?<!\w)[SN](?!\w)', translated_line)]
+        if not translated_positions:
+            return translated_line
+
+        chars = list(translated_line)
+        for orig_pos, trans_pos in zip(positions, translated_positions):
+            diff = orig_pos - trans_pos
+            if diff > 0:
+                chars.insert(trans_pos, ' ' * diff)
+            elif diff < 0:
+                start = max(0, trans_pos + diff)
+                del chars[start:trans_pos]
+            translated_line = ''.join(chars)
+            translated_positions = [m.start() for m in re.finditer(r'(?<!\w)[SN](?!\w)', translated_line)]
+            if len(translated_positions) < len(positions):
+                break
+
+        return translated_line
 
     def wrap_line_intelligently(self, line: str, max_length: int = None) -> List[str]:
         """
@@ -297,6 +340,9 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
             re.match(r'^[\s\{\}\(\)\[\]]+$', line.strip())):
             return [line]
 
+        # Capture original Y/N positions for alignment
+        yn_positions = self._detect_yn_positions(line)
+
         # Handle Y/N replacements in the entire line first
         line_with_yn = self.handle_yn_replacements(line)
 
@@ -325,6 +371,9 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
 
             # Update offset
             offset += len(translated_text) - len(original_text)
+
+        # Align S/N indicators
+        result_line = self._align_yes_no_spacing(line, result_line, yn_positions)
 
         # Handle line wrapping to prevent truncation
         wrapped_lines = self.wrap_line_intelligently(result_line)
