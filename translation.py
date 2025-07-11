@@ -50,6 +50,7 @@ class TextFileTranslator:
         }
 
 
+
     def is_form_header_or_code(self, text: str) -> bool:
         """Check if text is a form header or code that should be preserved"""
         text_upper = text.upper().strip()
@@ -168,6 +169,7 @@ CRITICAL TRANSLATION RULES:
 7. Consider the context to provide the most appropriate translation
 8. For Y/N indicators: Y = S (Sí), N = N (No)
 9. For YES/NO: YES = SÍ, NO = NO
+10. Translate references to ethnicities or nationalities into Spanish
 
 FORMATTING RULES:
 - If input is ALL CAPS, output must be ALL CAPS
@@ -272,6 +274,45 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
                 break
 
         return translated_line
+
+    def merge_paragraph_lines(self, lines: List[str]) -> List[str]:
+        """Merge consecutive lines that form a single paragraph"""
+        merged = []
+        buffer = ""
+        prefix = ""
+
+        for line in lines:
+            stripped = line.rstrip("\n\r")
+
+            if not stripped.strip():
+                if buffer:
+                    merged.append(prefix + buffer)
+                    buffer = ""
+                    prefix = ""
+                merged.append(stripped)
+                continue
+
+            current_prefix = re.match(r'^\s*', stripped).group()
+            content = stripped.strip()
+
+            if buffer:
+                if (len(buffer.strip()) > 40 and len(content) > 40 and
+                        current_prefix == prefix and
+                        not re.search(r'[.!?:]$', buffer.strip())):
+                    buffer += " " + content
+                    continue
+                else:
+                    merged.append(prefix + buffer)
+                    buffer = content
+                    prefix = current_prefix
+            else:
+                buffer = content
+                prefix = current_prefix
+
+        if buffer:
+            merged.append(prefix + buffer)
+
+        return merged
 
     def wrap_line_intelligently(self, line: str, max_length: int = None) -> List[str]:
         """
@@ -402,7 +443,8 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
         self.logger.info(f"Output file: {output_file_path}")
 
         # Read file
-        lines = self._read_file_with_encoding(input_file_path)
+        raw_lines = self._read_file_with_encoding(input_file_path)
+        lines = self.merge_paragraph_lines(raw_lines)
         total_lines = len(lines)
 
         self.logger.info(f"Processing {total_lines} lines...")
@@ -412,12 +454,11 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
         for i, line in enumerate(lines):
             line_content = line.rstrip('\n\r')
 
-            # Translate line
+            # Translate line or paragraph
             translated_line_list = self.translate_line(line_content, i)
 
-            # Add newlines back
             for translated_line in translated_line_list:
-                translated_lines.append(translated_line + '\n')
+                translated_lines.append(translated_line)
 
             # Progress update
             if (i + 1) % 5 == 0 or i == total_lines - 1:
@@ -443,7 +484,9 @@ Return ONLY the Spanish translation with no explanations or additional text.{con
         """Write output file"""
         try:
             with open(output_path, 'w', encoding='utf-8') as file:
-                file.writelines(lines)
+                for line in lines:
+                    padded = line[:self.max_line_length].ljust(self.max_line_length)
+                    file.write(padded + '\n')
 
             self.logger.info(f"Translation completed successfully!")
             self.logger.info(f"Output saved to: {output_path}")
